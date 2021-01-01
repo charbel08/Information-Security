@@ -1,0 +1,142 @@
+<html>
+	<body>
+		<h1> # FIX OWASP 2013 A2: SESSION FIXATION </h1>
+		<h2> The Vulnerability </h2>
+		<ul>
+			<li> Brief explanation:
+<xmp>
+	The session fixation vulnerability happens when user sessions are not handled properly.
+	For instance, if the same cookies are used when changes in priveledge occur, this vulnerability aries. 
+</xmp>
+			</li>
+			<li> Example code etc.:
+<xmp>
+	# From index.php
+	<?
+		...
+		if($operation == "login"){
+			$user=$_REQUEST['user'];
+			$password=$_REQUEST['password'];
+			$dbconn = pg_connect_db();
+			$query= "SELECT id, username, firstName, lastName, passwd FROM account WHERE username='$user' AND passwd='$password'";
+			$result = pg_prepare($dbconn, "", $query);
+			$result = pg_execute($dbconn, "", array());
+			if($row = pg_fetch_row($result)) {
+				$_SESSION['accountId']=$row[0];
+				$_SESSION['user']=$row[1];
+				$_SESSION['firstName']=$row[2];
+				$_SESSION['lastName']=$row[3];
+				$_SESSION['isLoggedIn']=True;
+			} else {
+				$g_debug = "$user not logged in";
+				$_SESSION['isLoggedIn']=False;
+			}
+		}
+		...
+		elseif($operation == "logout"){
+			unset($_SESSION);
+			$_SESSION['isLoggedIn']=False;
+		}
+		...
+	...
+	?>
+	
+	When logging in and out (change of priveledge), nothing is done to refresh or delete the session.
+
+</xmp>
+			</li>
+			<li> How attacker exploits this: 
+<xmp>
+	The attacker can use a public machine and access fourFours. They can then record the value of the assigned cookie, leave the 
+	browser open, and then wait for someone else to access the website. Once another person logs into fourFours from that same machine,
+	the cookie now becomes the cookie of an authenticated user until the victim logs out. The attacker can now use tools such as 
+	Netcat to communicate with fourFours with the now authenticated cookie. The hacker can now delete and add expressions on the behalf
+	of the victim and in a more general case they'd probably be able to do more damaging things such as changing a password or email address. 
+
+	This can also be done remotly, the attacker can establish a connection with the web server to get a sessionID. The attacker can then send an email to
+	the victim with a malicious link containing JavaScript code that executes in the victim's browser. That code would change the victim's sessionID to the
+	hacker's sessionID, and since it doesn't get changed when changes in privelege occur, when the victim logs in, that sessionID will now be authenticated and 
+	the attacker will be able to use it to gain access to the victim's account.
+
+</xmp>
+			</li>
+			<li> Impact: CIAaa and some details
+<xmp>
+	This compromises authentication (A) as attackers can be logged in as other users and perform actions on their behalf.
+	Moreover, this breaches integrity (I) as attacker can use the user's priveleges to make changes to their data (and possibly others).
+</xmp>
+			</li>
+		</ul>
+
+		<h2> INSTRUCTIONS TO VERIFY VULNERABILITY BELOW </h2>
+<xmp>
+	We can verify this by logging into the Kali Linux VM and launching Mozilla Firefox.
+	On the top right we open the menu and locate and click on Web Developer. Then we press on Toggle tools.
+	We then visit the website http://192.168.10.100/fourFours/
+	In the Network tab, we click on the top entry which will show us the GET request made to fourFours.
+	We then switch to the cookies tab where we will see the value of the session:
+
+		PHPSESSID: f72590fb2a37e56134cb594a310e5210
+	
+	We then log in using Jay Perlmuter's credentials for example --> username: perl and password: perl
+	After logging in, we check the value of the cookie just like above and we find:
+
+		PHPSESSID: f72590fb2a37e56134cb594a310e5210
+	
+	The sessionID stayed the same after a change in privelege confirming this vulnerability.
+
+</xmp>
+<xmp>
+</xmp>
+                <h2> The Fix </h2>
+                <ul>
+                        <li> Explain the fix:
+<xmp>
+	When the user successfuly logs in, we want to delete the previous sessionID and create a new one to
+	make the sessionID the attacker obtained useless.
+	To fix this, we can use the session_regenerate_id() php function.
+	It will replace the current session id with a new one, and keep the current session information. Passing in True 
+	as a parameter destroys the old associated session file.
+	With this implementation, everytime the user logs in, a new sessionID will be created and the older one will be
+	destroyed.
+
+	# From index_fixed.php
+	<?	
+		...
+		if($operation == "login"){
+			...
+			if($row = pg_fetch_row($result)) {
+				...
+				session_regenerate_id(True);
+			}
+		}
+		...
+		elseif($operation == "logout"){
+			...
+			session_destroy();
+		}
+		...
+	?>
+	...
+</xmp>
+                        </li>
+                        <li> How the fix resolves the issue:
+<xmp>
+	Attack scenario #1:
+
+		Say an attacker established a connection with the web server and got a sessionID and was able to change the victim's sessionID to
+		the one they just got.
+
+	Attack scenario #2:
+
+		Say an attacker visited fourFours on a public computer and recorded the sessionID they got and the victim is now using that same computer
+		and is about to login.
+
+	In both scenarios, as soon as the user logs in, the sessionID the attacker had is destroyed and thus can't be used anymore. Any attempt to 
+	authenticate with the old sessionID won't work.
+</xmp>
+                        </li>
+                </ul>
+
+	</body>
+</html>

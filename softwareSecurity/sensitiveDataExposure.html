@@ -1,0 +1,247 @@
+<html>
+	<body>
+		<h1> # FIX OWASP A6: SENSITIVE DATA EXPOSURE </h1>
+		<h2> The Vulnerability </h2>
+		<ul>
+			<li> Brief explanation:
+<xmp>
+	This vulnerability occurs when sensitive user information is not properly protected.
+	Things like passwords for example not being hashed allows anyone that has access to the
+	database to see them and get credentials to log into accounts that aren't theirs.
+	Another cause could be from not using HTTPS, allowing data to be exposed. 
+</xmp>
+			</li>
+			<li> Example code etc.:
+<xmp>
+	# From schema.sql
+	create table account (
+        id serial primary key,
+        username varchar(50) UNIQUE,
+        passwd varchar(50) NOT NULL, <-- 50 characters is not enough for SHA256 hashing
+        firstName varchar(50),
+        lastName varchar(50)
+	);
+
+	# From index.php
+	<?
+		...
+		if($operation == "login"){
+			$user=$_REQUEST['user'];
+			$password=$_REQUEST['password'];
+			...
+	?> 
+	...
+
+	# From the account table in fourFours database
+	fourfours=> select * from account;                                             
+	id |       username        |     passwd     | firstname |  lastname   
+	----+-----------------------+----------------+-----------+-------------
+	1 | bigBoy                | sdfdsfd        | Alex      | Large
+	2 | anne                  | lion           | Anne      | Lion
+	3 | lindah20              | fourfivesix    | Linda     | Swim
+	4 | coins                 | silverisbetter | Abagail   | Silver
+	5 | matchstick            | password1      | Jessie    | Burn
+	6 | coffee                | password       | Annie     | Cup
+	7 | ssll                  | passw0rd       | Diane     | Bassell
+	8 | cliff                 | cliff          | Steve     | Mountain
+	9 | arnold@cs.toronto.edu | sdxfdsgger     | Arnold    | Rosenbloom
+	10 | perl                  | perl           | Jay       | Perlmuter
+	11 | pickApeck             | Peter          | Peter     | Piper
+	12 | hotel                 | jbh            | Jen       | Binghampton
+	13 | dk@gmail.com          | esrever        | David     | Kleinman
+	14 | eightball@gmail.com   | badPassword    | Jesse     | Kowalski
+	15 | ivanna                | grant          | Ivanna    | Grant
+	(15 rows)
+
+	# From the URL
+	http://192.168.10.100/fourFours/index.php 
+
+</xmp>
+			</li>
+			<li> How attacker exploits this: 
+<xmp>
+	If an attacker is able to access this table through an SQL injection attack (or through other means). They will be able to use the information
+	from the table to log into any user's account. With this data, they can simply load http://192.168.10.100/fourFours/index.php in their browser
+	and enter user name: perl and password: perl to log in as Jay Perlmuter (for example). They can log in as any user and modify the website
+	(delete and add expressions) on the behalf of anyone.
+	Moreover, since the application is not using https to communicate, the attacker has another way of exploiting this vulnerability.
+	HTTP does not use an encryption layer, exposing data and allowing it to be intercepted by other users on the same network. The attacker
+	can use a man in the middle attack, where they listen (or maybe even modify) the communication between the victim's computer and the server.
+
+
+</xmp>
+			</li>
+			<li> Impact: CIAaa and some details
+<xmp>
+	Sensitive data exposure compromises confidentiality (C), as sensitive user information can get disclosed to unauthorized parties.
+	If the account table is accessed by the attacker, the hacker can then modify the fourFours website as they please. 
+</xmp>
+			</li>
+		</ul>
+
+		<h2> INSTRUCTIONS TO VERIFY VULNERABILITY BELOW </h2>
+<xmp>
+	To verify that the vulnerability exists, we can start by accessing the database with:
+
+		psql -U ff -d fourfours -h localhost # find the password in the index.php script
+	
+	We start by printing the account table:
+		
+		fourfours=> select * from account;
+
+	To which we get:
+
+		id |       username        |     passwd     | firstname |  lastname   
+		----+-----------------------+----------------+-----------+-------------
+		1 | bigBoy                | sdfdsfd        | Alex      | Large
+		2 | anne                  | lion           | Anne      | Lion
+		3 | lindah20              | fourfivesix    | Linda     | Swim
+		4 | coins                 | silverisbetter | Abagail   | Silver
+		5 | matchstick            | password1      | Jessie    | Burn
+		6 | coffee                | password       | Annie     | Cup
+		7 | ssll                  | passw0rd       | Diane     | Bassell
+		8 | cliff                 | cliff          | Steve     | Mountain
+		9 | arnold@cs.toronto.edu | sdxfdsgger     | Arnold    | Rosenbloom
+		10 | perl                  | perl           | Jay       | Perlmuter
+		11 | pickApeck             | Peter          | Peter     | Piper
+		12 | hotel                 | jbh            | Jen       | Binghampton
+		13 | dk@gmail.com          | esrever        | David     | Kleinman
+		14 | eightball@gmail.com   | badPassword    | Jesse     | Kowalski
+		15 | ivanna                | grant          | Ivanna    | Grant
+		(15 rows)
+	
+	We can clearly see that the passwords are not hashed, confirming the sensitive data exposure vulnerability.
+
+	Moreover, we can see in the URL that http is used and not https: http://192.168.10.100/fourFours/index.php 
+	Most browsers also tell the users that the connection is not secure if https isn't used.
+</xmp>
+<xmp>
+</xmp>
+                <h2> The Fix </h2>
+                <ul>
+                        <li> Explain the fix:
+<xmp>
+	First, we need to hash the database passwords.
+	To do this, we can run a script that hashes all the password in the database.
+	The php script is called hash_database.php and contains this code:
+
+		# From hash_database.php
+		<?
+		function pg_connect_db(){
+			$dbconn = pg_connect("dbname=fourfours user=ff host=localhost password=adg135sfh246");
+			pg_set_client_encoding($dbconn, 'UTF8');
+			return $dbconn;
+		}
+
+		$dbconn = pg_connect_db();
+		$result = pg_prepare($dbconn, "", 'alter table account alter column passwd type character varying(70);');
+		$result = pg_execute($dbconn, "", array());
+		$result = pg_prepare($dbconn, "", 'SELECT * FROM account');
+		$result = pg_execute($dbconn, "", array());
+		while ($row = pg_fetch_row($result)) {
+			$user = $row[1];
+			$password = $row[2];
+			# Using the username as salt
+			$hashed_password = hash('sha256', $user . $password);
+			$result2 = pg_prepare($dbconn, "", "UPDATE account SET passwd='$hashed_password' WHERE username='$user' AND passwd='$password';");
+			$result2 = pg_execute($dbconn, "", array());
+		}
+		echo "done"
+	?>
+
+	This will hash every user's password in the account table and uses the username as salt.
+	We now need to fix the authentication to hash the user's inputted password, we also need to add code to switch to https:
+		
+		# From index_fixed.php
+		<?	
+			...
+			if (!isset($_SERVER['HTTPS'])) {
+				header('Location: https://' . $_SERVER["SERVER_NAME"] . $_SERVER['REQUEST_URI']);
+			}
+			...
+			if($operation == "login"){
+				$user=$_REQUEST['user'];
+				$password = hash('sha256', $user . $_REQUEST['password']);
+				...
+		?> 
+		...
+	
+	The user can now login and the password will be stored securily. Moreover, now the only people that know the passwords are the users themeselves.
+	Note: the fourfoursuser table is quite redundant and also exposes sensitive data. As it is not used by the website, it might be best to just drop it: DROP TABLE fourfoursuser;
+	
+	To get the https section above to work, we need to configure a few things on the Ubuntu804Server.
+	We'll start by getting an SSL Certificate, for the purposes of this assignment we'll use a self signed certificate:
+
+		openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout fourFours.key -out fourFours.crt
+	
+	This will generate two files, fourFours.key and fourFours.crt which we'll place in /etc/ssl
+	On Ubuntu, each site has a separate configuration that can be found at /etc/apache2/sites-enabled/ so we run:
+
+		cd /etc/apache2/sites-enabled/
+	
+	Then we need to create a configuration file for fourFours, we do this with:
+
+		touch fourFours.conf
+	
+	And we add to it the following code:
+
+		<VirtualHost 192.168.10.100:443>
+		DocumentRoot /var/www/
+		ServerName 192.168.10.100
+		SSLEngine on
+		SSLCertificateFile /etc/ssl/fourFours.crt
+		SSLCertificateKeyFile /etc/ssl/fourFours.key
+		</VirtualHost>
+	
+	Finally, we restart apache with:
+
+		/etc/init.d/apache2 restart
+	
+	Launching the website we can see that https is being used.
+	
+</xmp>
+                        </li>
+                        <li> How the fix resolves the issue:
+<xmp>
+	Attack scenario:
+		An attacker has found their way to the database and wants to get user passwords to log in.
+		Let's say they were able to access the table using SQL injections and sqlmap: 
+
+			sqlmap -u http://192.168.10.100/fourFours/index.php --data "user=hi&password=hi&operation=login" --method POST -D public -T account --dump
+		
+		With the following output:
+
+			Database: public
+			Table: account
+			[15 entries]
+			+------+------------------------------------------------------------------+-------------+-----------------------+-----------+
+			| id   | passwd                                                           | lastname    | username              | firstname |
+			+------+------------------------------------------------------------------+-------------+-----------------------+-----------+
+			| 1    | c8863587b5928a07761f541e17af9599eaa7db75c48dea5a6659fa3adafd28c4 | Large       | bigBoy                | Alex      |
+			| 2    | b34c5de3ed84a3e53390dde5181774e2aa5fcb93fe57a2506f9f9d63beafd81d | Lion        | anne                  | Anne      |
+			| 3    | 24566bd8960833e21ea9fbb74423335f66a1dc461ab746edb1901345680dc6f9 | Swim        | lindah20              | Linda     |
+			| 4    | f692548a5cc143bbe3a1574c509e31d141c9bb407491d0cb5e98f66eb4fae4a6 | Silver      | coins                 | Abagail   |
+			| 5    | b59f2ee8ca0f0735f5a882e42359072b5f22a16918b5005f3cb48f253534452a | Burn        | matchstick            | Jessie    |
+			| 6    | 1504d1f76598f523389747a9603e65e6f2910a137372e39762c87b954d027912 | Cup         | coffee                | Annie     |
+			| 7    | 1d4a37f13eb602f62439cc9f48382c2ad28e9eb44230c576f5269ea517bf4f88 | Bassell     | ssll                  | Diane     |
+			| 8    | 9e2530839d9a8e3be75527c8d4df34163da83d9ba61a5daed543497cbf9318c1 | Mountain    | cliff                 | Steve     |
+			| 9    | 51ca57da06890720892bd2532e662d3aaaf94d983cf97df015851bb1ee8b8bfd | Rosenbloom  | arnold@cs.toronto.edu | Arnold    |
+			| 10   | c34456dcdb5057b6ad9c16fe3d4ee11dbe50a7f13e409399be52e806c37558ef | Perlmuter   | perl                  | Jay       |
+			| 11   | 181aa2f9f27d30b43d4647c553e76978087651c462e95c667326ef5e20e3de1b | Piper       | pickApeck             | Peter     |
+			| 12   | acbd6ea1eba9b9ee4ae7c02a864517fc0b71e3b8acd85f4020682b9a1dfc1011 | Binghampton | hotel                 | Jen       |
+			| 13   | e70719a4e05ce0d6126a172ac51caf758b21e83eeab9010659242454aeae6c33 | Kleinman    | dk@gmail.com          | David     |
+			| 14   | be0bf004356608c6024f4625096c686b189225a18d6eff1ae45ba46d97713a80 | Kowalski    | eightball@gmail.com   | Jesse     |
+			| 15   | ba08f3286145cbbc1adfa7b34d227d09b8eaae902a695ea13573d40c2dbf4a05 | Grant       | ivanna                | Ivanna    |
+			+------+------------------------------------------------------------------+-------------+-----------------------+-----------+
+		
+		The passwd column now contains salted hashed password.
+		The attacker can try logging in with username: bigBoy and password: c8863587b5928a07761f541e17af9599eaa7db75c48dea5a6659fa3adafd28c4 but the 
+		site would say 'bigBoy not logged in' as hashes are one way functions.
+	
+	In the case of https, if the attacker found a way to listen to the communication between the user and the server, the data would now be encrypted as well. 
+</xmp>
+                        </li>
+                </ul>
+
+	</body>
+</html>

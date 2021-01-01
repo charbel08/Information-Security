@@ -1,0 +1,232 @@
+<html>
+	<body>
+		<h1> # FIX OWASP A8: CSRF (Cross Site Request Forgery) </h1>
+		<h2> The Vulnerability </h2>
+		<ul>
+			<li> Brief explanation:
+<xmp>
+	CSRF vulnerability can arise when the website relies solely on the cookie to authorize user
+	requests. This becomes an issue when relevant actions can be performed through the URL 
+	(or even through POST requests) and the attacker misleads the victim to perform actions 
+	they did not intend.
+</xmp>
+			</li>
+			<li> Example code etc.:
+<xmp>
+	# From index.php
+	<?
+		session_start(); 
+		# No verification is made before processing a request
+		if(!isset($_SESSION['isLoggedIn']))$_SESSION['isLoggedIn']=False;
+		$operation=$_REQUEST['operation'];
+		$g_debug="";
+		$g_errors="";
+		...
+		if($operation == "login"){
+			...
+			# Nothing is done to tokenize when the user logs in
+			if($row = pg_fetch_row($result)) {
+				$_SESSION['accountId']=$row[0];
+				$_SESSION['user']=$row[1];
+				$_SESSION['firstName']=$row[2];
+				$_SESSION['lastName']=$row[3];
+				$_SESSION['isLoggedIn']=True;
+			}
+			...
+		}
+		...
+	?>
+	<html>
+		...
+		<? if($g_isLoggedIn){ ?>
+			<a href=?operation=logout>Logout</a>
+		...
+		<?php
+			...
+			$deleteLink="<a href=\"?operation=deleteExpression&expressionId=$expressionId&accountId=$g_accountId\"><img src=\"delete.png\" width=\"20\" border=\"0\" /></a>";
+			...
+		?>
+		<tr> 
+			<form method="post">
+				<td><input type="text" name="expression"/> </td>
+				<td><input type="submit" value="add"/></td>
+				<input type="hidden" name="value" value="<?=$i?>"/>
+				<input type="hidden" name="operation" value="addExpression"/>
+				<input type="hidden" name="accountId" value="<?=$g_accountId ?>"/>
+			</form>
+		</tr>
+		...
+	</html>
+</xmp>
+			</li>
+			<li> How attacker exploits this: 
+<xmp>
+	The attacker wants to get a user to delete their own expression by crafting a malicious URL.
+	They can see that the delete URL follows this format:
+
+		http://192.168.10.100/fourFours/index.php?operation=deleteExpression&expressionId=3&accountId=2
+	
+	The expressionIds seem to be predictable (just like in InsercureDirectObjectReferences.html). 
+	In this case, accountId=2 belongs to Anne Lion. If an attacker had this URL or was able to get the accountId 
+	and expressionId through other means, they would be able to use social engineering to get Anne to delete
+	one of her own expressions. 
+	
+	In this case, the attacker would keep the accountId the same and change the expressionId to 4 for example:
+
+		http://192.168.10.100/fourFours/index.php?operation=deleteExpression&expressionId=4&accountId=2
+
+	The attacker can then send this URL to Anne in hopes that she clicks on it. This is where social engineering comes in.
+	The attacker can hide the URL as an ordinary link for instance, making it tempting for Anne to click on it:
+
+		<a href="http://192.168.10.100/fourFours/index.php?operation=deleteExpression&expressionId=4&accountId=2">View my Pictures!</a>
+	
+	By clicking this link, Anne will delete one of her own entries, which is not what she intended. And since the expressionIds are predictable,
+	the attacker can iterate through them to see which cause a deletion and which don't.
+	The attacker can also force Anne to logout or add an expression using this same method, but adapted to POST requests using FORM tags.
+	The attacker can even use Anne to delete the expressions of other users.
+
+</xmp>
+			</li>
+			<li> Impact: CIAaa and some details
+<xmp>
+	This compromises integrity (I) since the user's data gets modified unintentionally. The deletion was caused by an unauthorized
+	party. This also breaches authentication (A) as the attacker is not logged in and forces the victim to make changes that require
+	the right permission.
+</xmp>
+			</li>
+		</ul>
+
+		<h2> INSTRUCTIONS TO VERIFY VULNERABILITY BELOW </h2>
+<xmp>
+	To verify this vulnerability, we can first take a look at the database (in my case):
+
+		fourfours=> select * from solution;                                                                
+		id | value | expression | accountid 
+	      ----+-------+------------+-----------
+		2 |     1 | 4/4        |         2
+		3 |     8 | 4+4        |         2
+		4 |    16 | 4*4        |         2
+		5 |     0 | 4-4        |        10
+		(4 rows)
+	
+	We can see the accountId and expressionIds of Anne Lion.
+	We can craft the following URL:
+
+		http://192.168.10.100/fourFours/index.php?operation=deleteExpression&expressionId=3&accountId=2
+	
+	We then open a browser and load the website:
+
+		http://192.168.10.100/fourFours/
+
+	We now log in as Anne Lion --> username: Anne and password: Lion  
+	(we can find these by looking at the account table, select * from account;)
+
+	In a new tab, we load the crafted URL, this will take us to the login page.
+	However, if we look at the solution table:
+
+		fourfours=> select * from solution;                                                                
+		id | value | expression | accountid 
+		  ----+-------+------------+-----------
+		2 |     1 | 4/4        |         2
+		4 |    16 | 4*4        |         2
+		5 |     0 | 4-4        |        10
+		(3 rows)
+
+	We can see that the expression with expressionId=2 has been deleted, confirming the vulnerability.
+	It's also important to note that only a loading screen showed up, which would probabliy not raise any
+	suspisions by the victim and might just be brushed off as a weird bug. 
+
+</xmp>
+		<h2> The Fix </h2>
+		<ul>
+			<li> Explain the fix: 
+<xmp>
+	We fix this by creating a random page token everytime the user logs in. This token will be checked everytime for
+	every request (logout, addExpression, deleteExpression).
+	So every GET or POST request includes this token. 
+	At the start of a request, the token received from a request is checked with the one
+	in the cookie to make sure they match. If not, then an exception is raised.
+
+	# From index_fixed.php
+	<?
+		session_start(); 
+		if(!isset($_SESSION['isLoggedIn']))$_SESSION['isLoggedIn']=False;
+
+		# Checking that token check happens when a user is logged in to avoid blocking the login screen with
+		# the exception
+		if(count($_GET) + count($_POST) > 0 && $_SESSION['isLoggedIn']){
+			if(!isset($_REQUEST['token'])){
+				throw new Exception('Token not found');
+			}
+			elseif(strcmp($_REQUEST['token'], $_SESSION['token']) <> 0){
+				throw new Exception('No token match');
+			}
+		}
+		...
+		if($operation == "login"){
+			...
+			if($row = pg_fetch_row($result)) {
+				...
+				# Creating a random token when the user successfully logs in
+				# Using username as salt
+				$_SESSION['token'] = hash('sha256', $user . uniqid(rand(), true));
+				...
+			}
+		}
+		...
+	?>
+	<html>
+		...
+		<? if($g_isLoggedIn){ ?>
+			<! -- Adding the token to the logout request-->
+			<a href=?operation=logout&token=<?php echo $_SESSION['token']?>>Logout</a>
+			...
+			<?php
+				<! -- Adding the token to the delete request-->
+				...
+				$rt = $_SESSION['token'];
+				...
+				$deleteLink="<a href=\"?operation=deleteExpression&expressionId=$expressionId&token=$rt\"><img src=\"delete.png\" width=\"20\" border=\"0\" /></a>";
+				...
+			?>
+			<form method="post">
+				<! -- Adding the token to the add expression request as a hidden variable-->
+				...
+				<input type="hidden" name="token" value="<?= $_SESSION['token']; ?>">
+				...
+			</form>
+			...
+	</html>
+</xmp>
+			</li>
+			<li> How the fix resolves the issue:
+<xmp>
+	Attack scenario:
+
+		Victim (Anne) has received an email from the attacker (Jay) with a link to view vacation pictures. 
+		Hidden in the link is the following URL:
+
+			http://192.168.10.100/fourFours/index_fixed.php?operation=deleteExpression&expressionId=3&accountId=2
+
+		By clicking on it, Anne's browser displays an error message:
+
+			Fatal error: Uncaught exception 'Exception' with message 'Token not found' in /var/www/fourFours/index_fixed.php:24
+			Stack trace: #0 {main} thrown in /var/www/fourFours/index_fixed.php on line 24
+		
+		This attack was prevented. But the attacker could supply a valid token since Jay has an account:
+
+			https://192.168.10.100/fourFours/index_fixed.php?operation=deleteExpression&expressionId=3&accountId=2
+			&token=1f1f595e7538dc583b0256d44b6023c7782a129f97a11faa6b74d00367ab46fd --> token was taken from Jay's account after logging in as him.
+
+		When Anne clicks on this link, it leads the browser to output the following error:
+
+			Fatal error: Uncaught exception 'Exception' with message 'No token match' in /var/www/fourFours/index_fixed.php:27 
+			Stack trace: #0 {main} thrown in /var/www/fourFours/index_fixed.php on line 27
+		
+		Both attacks have been prevented. 
+
+</xmp>
+			</li>
+		</ul>
+	</body>
+</html>

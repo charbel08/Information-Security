@@ -1,0 +1,243 @@
+<html>
+	<body>
+		<h1> # FIX OWASP 2013 A4: INSECURE DIRECT OBJECT REFERENCES </h1>
+		<h2> The Vulnerability </h2>
+		<ul>
+			<li> Brief explanation:
+<xmp>
+	Insecure direct object references vulnerability arises when an application allows the user's input to
+	directly reference data in the backend. In other words, it's when an application exposes a reference to 
+	an internal implementation object. This allows users to see the real identifiers (such as database keys)
+	and patterns of elements in the backend.
+</xmp>
+			</li>
+			<li> Example code etc.:
+<xmp>
+	# From index.php
+	<?
+		...
+		elseif($operation == "deleteExpression"){
+			$expressionId = $_REQUEST['expressionId'];
+			$accountId=$_REQUEST['accountId']; 
+			$dbconn = pg_connect_db();
+			$result = pg_prepare($dbconn, "", "DELETE FROM solution WHERE id=$expressionId AND accountId=$accountId");
+			$result = pg_execute($dbconn, "", array());
+		} elseif($operation == "addExpression"){
+			$expression = $_REQUEST['expression'];
+			$value=$_REQUEST['value'];
+			$accountId=$_REQUEST['accountId'];
+		}
+		...
+	?>
+	<html>
+		...
+		<?
+			...
+			if($expressionAccountId==$g_accountId){
+				$deleteLink="<a href=\"?operation=deleteExpression&expressionId=$expressionId&accountId=$g_accountId\"><img src=\"delete.png\" width=\"20\" border=\"0\" /></a>";
+			}
+			...
+		?>
+		<tr> 
+			<form method="post">
+				<td><input type="text" name="expression"/> </td>
+				<td><input type="submit" value="add"/></td>
+				<input type="hidden" name="value" value="<?=$i?>"/>
+				<input type="hidden" name="operation" value="addExpression"/>
+				<input type="hidden" name="accountId" value="<?=$g_accountId ?>"/>
+			</form>
+		</tr>
+		...
+	</html>
+</xmp>
+			</li>
+			<li> How attacker exploits this: 
+<xmp>
+	The attacker starts off by adding an expression, let's call that expression X.
+	After X is added, we now have the option to delete it. By hovering the mouse on the delete icon or 
+	by deleting the expression we can see what URL will be loaded. It would look like this if we 
+	were logged in as Jay Perlmuter and we wanted to delete the first expression in the database:
+
+		http://192.168.10.100/fourFours/index.php?operation=deleteExpression&expressionId=1&accountId=10
+	
+	The attacker can now test the predictability of the IDs by adding another expression Y.
+	When deleting the second expression Y, the follwoing URL is generated:
+	
+		http://192.168.10.100/fourFours/index.php?operation=deleteExpression&expressionId=2&accountId=10
+	
+	The attacker notices that the expressionId incremented by 1 when he added a new one, indicating that the
+	IDs have a pattern to them. The attacker can use an enumeration attack to figure out the pattern but in
+	this case it is obvious. And since the IDs in the URL directely reference elements in the database, changing
+	them in the URL will change the database.
+	In this case, it's insecure because the accountIds are also leaking to the front end. Based on what the attacker
+	saw from expressionIds, he can test values for accountIds (0 to 10 for example) and delete the expression of another
+	user. (accountIds are also leaking when adding an expression)
+
+	After a bit of trial and error, the attacker has figured out that the accountId of Anne Lion is 2 and that some of her expressions
+	have expressionIds 3, 4, 5.
+	He can now delete another one of her expressions by using the following URL:
+
+		http://192.168.10.100/fourFours/index.php?operation=deleteExpression&expressionId=6&accountId=2
+	
+	The attacker can do this for any user and keep deleting expressions that aren't his.
+</xmp>
+			</li>
+			<li> Impact: CIAaa and some details
+<xmp>
+	This compromises integrity (I) as other user's information does not remain unchanged in storage. This change is done by
+	an unauthorized party. This also breaches authentication (A) as the attacker can perform actions on other users behalf 
+	without the proper permissions.
+</xmp>
+			</li>
+		</ul>
+
+		<h2> INSTRUCTIONS TO VERIFY VULNERABILITY BELOW </h2>
+<xmp>
+</xmp>
+<xmp>
+	To verify this, we first log into the database and look at the solution table:
+
+		fourfours=> select * from solution;
+	
+	And we get the following table (in my case):
+
+		id | value | expression | accountid 
+	      ----+-------+------------+-----------
+		3 |     0 |            |        10
+		4 |     1 | 4/4        |         2
+		5 |     2 | 4/4/4      |         2
+		6 |     3 | 4/4/4/4/4  |         2
+		(4 rows)
+	
+	User with accountID 2 has 3 expressions with IDs 4, 5 and 6.
+	Now that we have this information, let's test whether we can delete a user's entry
+	when logged in as another user. 
+
+	We load fourFours in our browser:
+
+		http://192.168.10.100/fourFours/
+	
+	And log in as Jay Perlmuter --> username: perl and password: perl
+	Now let's see if we can delete Anne's 4/4 entry.
+	We craft the following URL:
+
+		http://192.168.10.100/fourFours/index.php?operation=deleteExpression&expressionId=4&accountId=2
+	
+	Anne's 4/4 entry has been deleted. This confirms the vulnerability.
+	We can even see in the database that the entry is gone:
+
+		fourfours=> select * from solution;
+		id | value | expression | accountid 
+		----+-------+------------+-----------
+		3 |     0 |            |        10
+		5 |     2 | 4/4/4      |         2
+		6 |     3 | 4/4/4/4/4  |         2
+		(3 rows)
+</xmp>
+                <h2> The Fix </h2>
+                <ul>
+                        <li> Explain the fix:
+<xmp>
+	To fix this, we'll use an indirect reference map.
+	When the user logs in, we create a dictionary that maps the hashed expressionIds to the actual expressionIds that are particular to the user.
+	We then store the map in the user's session.
+	In the front end, the expressionId is now hashed, hiding any kind of pattern from the attacker. 
+	When a user deletes an entry, the hashed expressionId is looked up in the map to find the actual expressionId and that
+	value is used to access the database. That expressionId is then deleted from the map.
+	When a user adds an entry, the map in the cookie has the new expressionId and its corresponding hash added to it. 
+
+	Moreover, we made it so that the accountId is no longer taken from the request, instead it is taken from the session both when adding and 
+	deleting an expression.
+
+	# From index_fixed.php
+	<?	
+		...
+		if($operation == "login"){
+			...
+			# Creating hash map to store our indirect references and storing them in cookies
+			$hash_map = array();
+			$result = pg_prepare($dbconn, "", "SELECT * FROM solution WHERE accountid=$1");
+			$result = pg_execute($dbconn, "", array($row[0]));
+			while ($row = pg_fetch_row($result)) {
+				$hash_map[hash('sha256', "saltexpression" . $row[0])] = $row[0];
+			}
+			$_SESSION['expressionMap']=$hash_map;
+			...
+		}
+		...
+		elseif($operation == "deleteExpression"){
+			# Note: htmlentities is for XSS fix
+			# Getting the un-hashed version of expressionId 
+			$expressionId = $_SESSION['expressionMap'][htmlentities($_REQUEST['expressionId'], ENT_QUOTES, 'UTF-8')];
+
+			$dbconn = pg_connect_db();
+			$result = pg_prepare($dbconn, "statement2", 'DELETE FROM solution WHERE id=$1 AND accountId=$2;');
+			# accounId is now taken from the session instead of the request
+			$result = pg_execute($dbconn, "statement2", array($expressionId, $_SESSION['accountId']));
+
+			# Note: htmlentities is for XSS fix
+			# Removing expressionId from expression map
+			unset($_SESSION['expressionMap'][htmlentities($_REQUEST['expressionId'], ENT_QUOTES, 'UTF-8')]);
+		} elseif($operation == "addExpression"){
+			...
+			if(!($row = pg_fetch_row($result))) {
+				...
+				# accountId is now taken from the session instead of the request (IDOR Fix)
+				$accountId=$_SESSION['accountId'];
+				... 
+				# Getting the expression ID and adding it to the expression map in the session
+				$result = pg_prepare($dbconn, "statement5", 'SELECT id FROM solution WHERE value=$1 AND expression=$2 AND accountId=$3;');
+				$result = pg_execute($dbconn, "statement5", array($value, $expression, $accountId));
+				$row = pg_fetch_row($result);
+
+				# Adding the new expressionId to the expression map 
+				$_SESSION['expressionMap'][hash('sha256', "saltexpression" . $row[0])] = $row[0];
+			}
+			...
+		}
+		...
+	?>
+	<html>
+		...
+		<?	...
+			$expressionId = hash('sha256', "saltexpression" . $expressionId);
+			# Removed accountId field
+			$deleteLink="<a href=\"?operation=deleteExpression&expressionId=$expressionId&token=$rt\"><img src=\"delete.png\" width=\"20\" border=\"0\" /></a>";
+			...
+		?>
+		<form method="post">
+			<td><input type="text" name="expression"/> </td>
+			<td><input type="submit" value="add"/></td>
+			# Note token is for CSRF vulnerability
+			<input type="hidden" name="token" value="<?= $_SESSION['token']; ?>">
+			<input type="hidden" name="value" value="<?=$i?>"/>
+			<input type="hidden" name="operation" value="addExpression"/>
+			# Removed accountId hidden variable
+		</form>
+		...
+	</html>
+</xmp>
+                        </li>
+                        <li> How the fix resolves the issue:
+<xmp>
+	Attack scenario:
+
+		The attacker is logged in and wants to delete another user's entry.
+		The attacker wants to look for some patterns or leaks from the backend to the frontend, but the URL looks like this:
+
+		https://192.168.10.100/fourFours/index_fixed.php?operation=deleteExpression&expressionId=4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce
+		&token=253cf988d09e9cb82b8be0c5cf85e7374538cad4b00418478c5fafda7b65c7f1
+
+		Note: the token part of the URL is for the CSRF vulnerability
+		The expressionId is now hashed and has no visible pattern and does not reference an expressionId directly.
+		Even if the attacker knew what expressionId belonged to the victim, they wouldn't be able to use it unless they found the right hash.
+		But even with the right hash, the accountId is no longer taken from the request, so no unecessary information is leaked to the attacker 
+		and they can't target other users anymore. accountId was also removed from the 'adding a new expression' operation.
+
+
+</xmp>
+                        </li>
+                </ul>
+
+	</body>
+</html>
